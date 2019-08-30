@@ -1,0 +1,591 @@
+scilla_version 0
+
+(* This contract implements a bonding curve by using sigmoid function*)
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library SimpleBondingCurve
+
+let success_code = Int32 0
+let not_owner_code = Int32 1
+let no_reward_code = Int32 2
+
+let zero = Uint128 0
+let one = Uint128 1
+let two = Uint128 2
+let zero_address = builtin ripemd160hash zero
+let long_list =
+  let ze32 = Int32 0 in
+  let nil = Nil {Int32} in
+  let l1 = Cons {Int32} ze32 nil in
+  let l2 = Cons {Int32} ze32 l1 in
+  let l3 = Cons {Int32} ze32 l2 in
+  let l4 = Cons {Int32} ze32 l3 in
+  let l5 = Cons {Int32} ze32 l4 in
+  let l6 = Cons {Int32} ze32 l5 in
+  let l7 = Cons {Int32} ze32 l6 in
+  let l8 = Cons {Int32} ze32 l7 in
+  let l9 = Cons {Int32} ze32 l8 in
+  let l11 = Cons {Int32} ze32 l9 in
+  let l21 = Cons {Int32} ze32 l11 in
+  let l31 = Cons {Int32} ze32 l21 in
+  let l41 = Cons {Int32} ze32 l31 in
+  let l51 = Cons {Int32} ze32 l41 in
+  let l61 = Cons {Int32} ze32 l51 in
+  let l71 = Cons {Int32} ze32 l61 in
+  let l81 = Cons {Int32} ze32 l71 in
+  let l91 = Cons {Int32} ze32 l81 in
+  let l12 = Cons {Int32} ze32 l91 in
+  let l22 = Cons {Int32} ze32 l12 in
+  let l32 = Cons {Int32} ze32 l22 in
+  let l42 = Cons {Int32} ze32 l32 in
+  let l52 = Cons {Int32} ze32 l42 in
+  let l62 = Cons {Int32} ze32 l52 in
+  let l72 = Cons {Int32} ze32 l62 in
+  let l82 = Cons {Int32} ze32 l72 in
+  let l92 = Cons {Int32} ze32 l82 in
+  let l13 = Cons {Int32} ze32 l92 in
+  let l23 = Cons {Int32} ze32 l13 in
+  let l33 = Cons {Int32} ze32 l23 in
+  let l43 = Cons {Int32} ze32 l33 in
+  let l53 = Cons {Int32} ze32 l43 in
+  let l63 = Cons {Int32} ze32 l53 in
+  let l73 = Cons {Int32} ze32 l63 in
+  let l83 = Cons {Int32} ze32 l73 in
+  let l93 = Cons {Int32} ze32 l83 in
+  let l14 = Cons {Int32} ze32 l93 in
+  let l24 = Cons {Int32} ze32 l14 in
+  let l34 = Cons {Int32} ze32 l24 in
+  let l44 = Cons {Int32} ze32 l34 in
+  let l54 = Cons {Int32} ze32 l44 in
+  let l64 = Cons {Int32} ze32 l54 in
+  let l74 = Cons {Int32} ze32 l64 in
+  let l84 = Cons {Int32} ze32 l74 in
+  let l94 = Cons {Int32} ze32 l84 in
+  Cons {Int32} ze32 l94
+
+(* Babylonian method *)
+let sqrt =
+  fun (x: Uint128) =>
+    let folder_sqrt = @list_foldl Int32 Uint128 in
+    let init_num = builtin add x one in
+    let init = builtin div init_num two in
+    let iter =
+      fun (z: Uint128) =>
+      fun (h: Int32) =>
+        let x_div_z = builtin div x z in
+        let z_num = builtin add x_div_z z in
+        builtin div z_num two in
+    folder_sqrt iter init long_list
+
+
+let one_msg =
+  fun (msg : Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let min_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+  let alt = builtin lt a b in
+  match alt with
+  | True =>
+    a
+  | False =>
+    b
+  end
+
+let le_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+    let x = builtin lt a b in
+    match x with
+    | True => True
+    | False =>
+      let y = builtin eq a b in
+      match y with
+      | True => True
+      | False => False
+      end
+    end
+
+(* (v1 - v2)^2 *)
+let sub_and_power =
+  fun (v1: Uint128) =>
+  fun (v2: Uint128) =>
+    let is_sub_negative = builtin lt v1 v2 in
+    match is_sub_negative with
+    | True =>
+      let v = builtin sub v2 v1 in
+      builtin mul v v
+    | False =>
+      let v = builtin sub v1 v2 in
+      builtin mul v v
+    end
+
+(* dynamic tax model *)
+let calc_tax_from_level =
+  fun (t: Uint128) =>
+  fun (lv: Uint128) =>
+  fun (lv_max: Uint128) =>
+    let mul_t_lv = builtin mul t lv in
+    let tlv = builtin div mul_t_lv lv_max in
+    builtin sub t tlv
+
+(* calculate required base token from current total amount for smart token  *)
+let calculate_base_token_pool =
+  fun (a: Uint128) =>
+  fun (b: Uint128) =>
+  fun (c: Uint128) =>
+  fun (smart_token_total: Uint128) =>
+    let x = smart_token_total in
+    let pow_a_2 = builtin mul a a in
+    let ass = builtin mul a x in
+    let l1 = sub_and_power x b in
+    let l2 = builtin add l1 c in
+    let l3 = builtin mul pow_a_2 l2 in
+    let l4 = sqrt l3 in
+    builtin add l4 ass
+
+(* x = pool_smart_token *)
+(* d = pool_base_token *)
+(* g = base_token_amount + a * sqrt(b^2 +c) + d *)
+let calculate_purchase_return =
+  fun (a: Uint128) =>
+  fun (normal_b: Uint128) =>
+  fun (c: Uint128) =>
+  fun (t: Uint128) =>
+  fun (pool_smart_token: Uint128) =>
+  fun (base_token_amount: Uint128) =>
+    let x = pool_smart_token in
+    let normal_g = base_token_amount in
+    let b = builtin sub normal_b t in
+    let d = calculate_base_token_pool a b c x in
+    let g = builtin add d normal_g in
+    let pow_a_2 = builtin mul a a in
+    let pow_b_2 = builtin mul b b in
+    let mul_a_b = builtin mul a b in
+    let pow_g_2 = builtin mul g g in
+    let num1 = builtin add pow_b_2 c in
+    let num2 = builtin mul pow_a_2 num1 in
+    let num = builtin sub pow_g_2 num2 in
+    let den1 = builtin sub g mul_a_b in
+    let den2 = builtin mul a den1 in
+    let den = builtin mul two den2 in
+    let future_total_amount = builtin div num den in
+    builtin sub future_total_amount x
+
+(* x = smart_token_total *)
+(* x_s = sale_smart_token_amount *)
+let calculate_sale_return =
+  fun (a: Uint128) =>
+  fun (normal_b: Uint128) =>
+  fun (c: Uint128) =>
+  fun (t: Uint128) =>
+  fun (smart_token_total: Uint128) =>
+  fun (sale_smart_token_amount: Uint128) =>
+    let x = smart_token_total in
+    let x_s = sale_smart_token_amount in
+    let b = builtin add normal_b t in
+    let pow_a_2 = builtin mul a a in
+    let l1 = sub_and_power x b in
+    let l2 = builtin add l1 c in
+    let l3 = builtin mul pow_a_2 l2 in
+    let l4 = sqrt l3 in
+    let r1 = builtin add b x_s in
+    let r2 = sub_and_power x r1 in
+    let r3 = builtin add r2 c in
+    let r4 = builtin mul pow_a_2 r3 in
+    let r5 = sqrt r4 in
+    let ak = builtin mul a x_s in
+    let v1 = builtin add l4 ak in
+    builtin sub v1 r5
+
+type User =
+  | User of ByStr20 Uint128
+
+let update_members =
+  fun (members: Map ByStr20 User) =>
+  fun (input_members: List User) =>
+    let folder_add_input = @list_foldl User (Map ByStr20 User) in
+    let iter =
+      fun (mems: Map ByStr20 User) =>
+      fun (user: User) =>
+        match user with
+        | User addr level =>
+          let is_contains = builtin contains mems addr in
+          match is_contains with
+          | True =>
+            builtin put mems addr user
+          | False =>
+            mems
+          end
+        end
+      in
+      folder_add_input iter members input_members
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract SimpleBondingCurve
+(owner : ByStr20,
+ decimals : Uint32,
+ name : String,
+ symbol : String,
+ init_base_token_contract: ByStr20,
+ init_a: Uint128,
+ init_b: Uint128,
+ init_c: Uint128,
+ init_base_tax: Uint128,
+ init_max_level: Uint128)
+
+field total_tokens : Uint128 = Uint128 0
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field allowed : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+field base_token_contract: ByStr20 = init_base_token_contract
+field pool_base_token: Uint128 = Uint128 0
+field members : Map ByStr20 User =
+  let map = Emp ByStr20 User in
+  let user = User owner one in
+  builtin put map owner user
+
+(* constants for sigmoid function *)
+(* maximum price / 2 *)
+field a: Uint128 = init_a
+(* token supply when price reach maximum price / 2 *)
+field b: Uint128 =  init_b
+(* sigmoid gradient *)
+field c: Uint128 =  init_c
+
+(* constants for dynamic tax model *)
+field base_tax: Uint128 = init_base_tax
+field max_level: Uint128 = init_max_level
+
+transition BalanceOf (tokenOwner : ByStr20)
+  bal <- balances[tokenOwner];
+  match bal with
+  | Some v =>
+	e = {_eventname : "BalanceOf"; address : tokenOwner; balance : v};
+	event e
+  | None =>
+	e = {_eventname : "BalanceOf"; address : tokenOwner; balance : Uint128 0};
+    event e
+  end
+end
+
+transition TotalSupply ()
+  total <- total_tokens;
+  e = {_eventname : "TotalSupply"; caller : _sender; balance : total};
+  event e
+end
+
+transition Transfer (to : ByStr20, tokens : Uint128)
+  bal <- balances[_sender];
+  match bal with
+  | Some b =>
+    can_do = le_int tokens b;
+    match can_do with
+    | True =>
+      (* subtract tokens from _sender and add it to "to" *)
+      new_sender_bal = builtin sub b tokens;
+      balances[_sender] := new_sender_bal;
+
+      (* Adds tokens to "to" address *)
+      to_bal <- balances[to];
+      new_to_bal = match to_bal with
+      | Some x => builtin add x tokens
+      | None => tokens
+      end;
+
+  	  balances[to] := new_to_bal;
+      e = {_eventname : "TransferSuccess"; sender : _sender; recipient : to; amount : tokens};
+      event e
+    | False =>
+      (* balance not sufficient. *)
+    e = {_eventname : "TransferFailure"; sender : _sender; recipient : to; amount : Uint128 0};
+      event e
+    end
+  | None =>
+    (* no balance record, can't transfer *)
+  	e = {_eventname : "TransferFailure"; sender : _sender; recipient : to; amount : Uint128 0};
+    event e
+  end
+end
+
+transition TransferFrom (from : ByStr20, to : ByStr20, tokens : Uint128)
+  bal <- balances[from];
+  (* Check if _sender has been authorized by "from" *)
+  sender_allowed_from <- allowed[from][_sender];
+  match bal with
+  | Some a =>
+    match sender_allowed_from with
+    | Some b =>
+        (* We can only transfer the minimum of available or authorized tokens *)
+        t = min_int a b;
+        can_do = le_int tokens t;
+        match can_do with
+        | True =>
+            (* tokens is what we should subtract from "from" and add to "to" *)
+            new_from_bal = builtin sub a tokens;
+            balances[from] := new_from_bal;
+            to_bal <- balances[to];
+            match to_bal with
+            | Some tb =>
+                new_to_bal = builtin add tb tokens;
+                balances[to] := new_to_bal
+            | None =>
+                (* "to" has no balance. So just set it to tokens *)
+                balances[to] := tokens
+            end;
+            (* reduce "allowed" by "tokens" *)
+            new_allowed = builtin sub b tokens;
+            allowed[from][_sender] := new_allowed;
+            e = {_eventname : "TransferFromSuccess"; sender : from; recipient : to; amount : tokens};
+            event e
+        | False =>
+            e = {_eventname : "TransferFromFailure"; sender : from; recipient : to; amount : Uint128 0};
+            event e
+        end
+    | None =>
+        e = {_eventname : "TransferFromFailure"; sender : from; recipient : to; amount : Uint128 0};
+        event e
+    end
+  | None =>
+	e = {_eventname : "TransferFromFailure"; sender : from; recipient : to; amount : Uint128 0};
+	event e
+  end
+end
+
+transition Approve (spender : ByStr20, tokens : Uint128)
+  allowed[_sender][spender] := tokens;
+  e = {_eventname : "ApproveSuccess"; approver : _sender; spender : spender; amount : tokens};
+  event e
+end
+
+transition Allowance (tokenOwner : ByStr20, spender : ByStr20)
+  spender_allowance <- allowed[tokenOwner][spender];
+  match spender_allowance with
+  | Some n =>
+      e = {_eventname : "Allowance"; owner : tokenOwner; spender : spender; amount : n};
+      event e
+  | None =>
+      e = {_eventname : "Allowance"; owner : tokenOwner; spender : spender; amount : Uint128 0};
+      event e
+  end
+end
+
+transition Buy (base_token_amount : Uint128, min_return_smart: Uint128)
+  sender_info <- members[_sender];
+  match sender_info with
+  | Some u =>
+    match u with
+    | User addr level =>
+      smart_total <- total_tokens;
+      v1 <- a;
+      v2 <- b;
+      v3 <- c;
+      v4 <- base_tax;
+      pool_base <- pool_base_token;
+      m_lv <- max_level;
+
+      mod_tax = calc_tax_from_level v4 level m_lv;
+
+      (* calculate purchase return from base token amount *)
+      smart_token_mint = calculate_purchase_return
+        v1 v2 v3 mod_tax smart_total base_token_amount;
+
+      (* validation: smart_token_mint is greater than 0 *)
+      ge_min_return = le_int min_return_smart smart_token_mint;
+      match ge_min_return with
+      | True =>
+        bal <- balances[_sender];
+        (* add smart token to sender's balance *)
+        match bal with
+        | Some b =>
+          new_sender_bal = builtin add b smart_token_mint;
+          balances[_sender] := new_sender_bal;
+
+          e = { _eventname : "BalanceChanged"; sender : _sender; recipient : _this_address;
+            previous_balance: b; new_balance: new_sender_bal};
+          event e
+        | None =>
+          balances[_sender] := smart_token_mint;
+          e = { _eventname : "BalanceChanged"; sender : _sender; recipient : _this_address;
+            previous_balance: zero; new_balance: smart_token_mint};
+          event e
+        end;
+
+        (* add smart token to total supply *)
+        total <- total_tokens;
+        new_total = builtin add total smart_token_mint;
+        total_tokens := new_total;
+
+        (* add base token to pool *)
+        new_pool_base = builtin add pool_base base_token_amount;
+        pool_base_token := new_pool_base;
+
+        e = { _eventname : "BuyTransitionSuccess"; sender : _sender; recipient : _this_address;
+          smart_token_mint: smart_token_mint; base_token_amount: base_token_amount;
+           total_smart_supply: new_total; total_base_pool: new_pool_base};
+        event e;
+
+        (* transfer base token to Contract from sender *)
+        contract_address <- base_token_contract;
+        msg = { _tag : "TransferFrom"; _recipient : contract_address; _amount : zero;
+          from : _sender; to : _this_address; tokens : base_token_amount};
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        e = { _eventname : "CalculatedTokenLessMinReturn"; _sender : _sender; _recipient: _this_address; _amount : zero;
+          amount : smart_token_mint; min_return: min_return_smart };
+        event e
+      end
+    end
+  | None =>
+    e = { _eventname : "NoSenderInfomation"; _sender : _sender; _recipient: _this_address; _amount : zero};
+    event e
+  end
+end
+
+transition Sell (smart_token_amount : Uint128, min_return_base: Uint128)
+  sender_info <- members[_sender];
+  match sender_info with
+  | Some u =>
+      match u with
+      | User addr level =>
+      smart_total <- total_tokens;
+      v1 <- a;
+      v2 <- b;
+      v3 <- c;
+      v4 <- base_tax;
+      m_lv <- max_level;
+
+      mod_tax = calc_tax_from_level v4 level m_lv;
+
+      base_token_amount = calculate_sale_return
+        v1 v2 v3 mod_tax smart_total smart_token_amount;
+
+      bal <- balances[_sender];
+
+      (* validation: base_token_amount is greater than 0 *)
+      ge_min_return = le_int min_return_base base_token_amount;
+      match ge_min_return with
+      | True =>
+          (* sub smart token from sender's balance *)
+        match bal with
+        | Some b =>
+          (* check sender's balance *)
+          can_do = le_int smart_token_amount b;
+          match can_do with
+          | True =>
+            new_sender_bal = builtin sub b smart_token_amount;
+            balances[_sender] := new_sender_bal;
+
+            e = { _eventname : "BalanceChanged"; sender : _sender; recipient : _this_address;
+              previous_balance: b; new_balance: new_sender_bal};
+            event e;
+
+            (* sub smart token from total supply *)
+            total <- total_tokens;
+            new_total = builtin sub total smart_token_amount;
+            total_tokens := new_total;
+
+            (* sub base token to pool *)
+            pool_base <- pool_base_token;
+            new_pool_base = builtin sub pool_base base_token_amount;
+            pool_base_token := new_pool_base;
+
+            e = { _eventname : "SellTransitionSuccess"; sender : _sender; recipient : _this_address;
+              smart_token_burn: smart_token_amount; base_token_amount: base_token_amount;
+              total_smart_supply : new_total; total_base_pool : new_pool_base };
+            event e;
+
+            (* transfer base token from contract to sender *)
+            contract_address <- base_token_contract;
+            msg = { _tag : "Transfer"; _recipient : contract_address; _amount : zero;
+            to : _sender; tokens : base_token_amount};
+            msgs = one_msg msg;
+            send msgs
+
+          | False =>
+            (* balance insufficient. *)
+            e = {_eventname : "InsufficientBalance"; sender : _sender; recipient : _this_address;
+              amount : smart_token_amount; balance: b};
+            event e
+          end
+        | None =>
+          (* no balance record *)
+          e = {_eventname : "Nobalance"; sender : _sender; recipient : _this_address;
+            amount : smart_token_amount};
+          event e
+        end
+      | False =>
+        e = { _eventname : "CalculatedTokenLessMinReturn"; _sender : _sender; _recipient: _this_address; _amount : zero;
+          amount : base_token_amount; min_return: min_return_base };
+        event e
+      end
+    end
+  | None =>
+    e = { _eventname : "NoSenderInfomation"; _sender : _sender; _recipient: _this_address; _amount : zero};
+    event e
+  end
+end
+
+transition ChangeBaseTokenAddress (address: ByStr20)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    base_token_contract := address;
+    e = {_eventname : "ChangeBaseTokenAddressSuccess"; caller : _sender; token_address: address };
+    event e
+  | False =>
+    e = {_eventname : "ChangeBaseTokenAddressFailure"; caller : _sender};
+    event e
+  end
+end
+
+transition ChangeSigmoidConstant (v1: Uint128, v2: Uint128, v3: Uint128, tax: Uint128, m_level: Uint128)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    a := v1;
+    b := v2;
+    c := v3;
+    base_tax := tax;
+    max_level := m_level;
+    e = {_eventname : "ChangeSigmoidConstantSuccess"; caller : _sender; a: v1; b: v2; c: v3; tax: tax; max_level: m_level };
+    event e
+  | False =>
+    e = {_eventname : "ChangeSigmoidConstantFailure"; caller : _sender};
+    event e
+  end
+end
+
+transition JoinCommunity (address: ByStr20, level: Uint128)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    user = User address level;
+    members[address] := user;
+    e = {_eventname : "JoinCommunitySuccess"; caller : _sender; address: address; level: level };
+    event e
+  | False =>
+    e = {_eventname : "JoinCommunityFailure"; caller : _sender; code : not_owner_code};
+    event e
+  end
+end
+
+transition UpdateLevels (input_members: List User)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    mems <- members;
+    new_mems = update_members mems input_members;
+    members := new_mems;
+    e = {_eventname : "UpdateLevelsSuccess"; caller : _sender };
+    event e
+  | False =>
+    e = {_eventname : "UpdateLevelsFailure"; caller : _sender };
+    event e
+  end
+end
